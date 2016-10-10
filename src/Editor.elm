@@ -1,58 +1,44 @@
-port module Editor exposing (..)
+module Editor
+    exposing
+        ( State
+        , emptyEditor
+        , Msg
+        , update
+        , Config
+        , fullConfig
+        , view
+        )
 
-import Html exposing (..)
-import Html.Attributes exposing (..)
-import Html.Events exposing (..)
-import Json.Decode as Json
-import Html.App as Html
-import Array exposing (Array)
-import Regex exposing (..)
-
-
-debug : Bool
-debug =
-    True
-
-
-main : Program Never
-main =
-    Html.program
-        { init = init
-        , update = update
-        , view = view
-        , subscriptions = subscriptions
-        }
-
+import Html exposing (Html)
+import Html.Attributes as Attr
+import Html.Events as Events
+import Json.Decode exposing (Decoder)
+import Editor.Document as Document exposing (Document)
+import Dict exposing (Dict)
+import Focus exposing (Focus)
 
 
 -- Model
 
 
-type alias Model =
-    { blocks : List Block
-    , selection : Selection
-    }
+type State
+    = State
+        { data : Document
+        , buffer : String
+        }
 
 
-type alias Block =
-    { text : String
-    }
+emptyEditor : State
+emptyEditor =
+    State
+        { data = Document.empty
+        , buffer = ""
+        }
 
 
-type alias Selection =
-    { startsAt : Int
-    , startOffset : Int
-    , endsAt : Int
-    , endOffset : Int
-    }
-
-
-init : ( Model, Cmd Msg )
-init =
-    { blocks = [ Block "Foo" ]
-    , selection = Selection 0 0 0 0
-    }
-        ! []
+buffer : Focus { state | buffer : String } String
+buffer =
+    Focus.create .buffer (\updater state -> { state | buffer = updater state.buffer })
 
 
 
@@ -60,106 +46,114 @@ init =
 
 
 type Msg
-    = Change String
-    | Key Int
+    = BeforeInput String
+    | Input String
+    | Select
 
 
-port setCursorPosition : String -> Cmd msg
+update : Msg -> State -> State
+update msg state =
+    case Debug.log "Update:" msg of
+        BeforeInput str ->
+            state
 
+        Input str ->
+            state
+                |> extractState
+                |> Focus.set buffer str
+                |> Debug.log "hm"
+                |> State
 
-update : Msg -> Model -> ( Model, Cmd Msg )
-update msg model =
-    case Debug.log "msg" msg of
-        Change str ->
-            model ! []
-
-        -- <CR>
-        Key 13 ->
-            let
-                block' =
-                    Block ""
-
-                selection' =
-                    nextLine model.selection
-            in
-                { model | blocks = model.blocks ++ [ block' ], selection = selection' } ! []
-
-        Key _ ->
-            model ! []
-
-
-removeNewLines : String -> String
-removeNewLines =
-    replace All (regex "\n") (always "")
-
-
-nextLine : Selection -> Selection
-nextLine sel =
-    { sel | startsAt = sel.startsAt + 1, endsAt = sel.endsAt + 1 }
-
-
-
--- Subscriptions
-
-
-subscriptions : Model -> Sub Msg
-subscriptions model =
-    Sub.none
+        Select ->
+            state
 
 
 
 -- View
 
 
-targetText : Json.Decoder String
-targetText =
-    Json.at [ "target", "innerText" ] Json.string
+type Config msg
+    = Config
+        { toMsg : Msg -> msg
+        , readOnly : Bool
+        }
 
 
-onKeyDown : (Int -> msg) -> Attribute msg
-onKeyDown tagger =
-    on "keydown" (Json.map tagger keyCode)
+fullConfig :
+    { toMsg : Msg -> msg
+    , readOnly : Bool
+    }
+    -> Config msg
+fullConfig config =
+    Config config
 
 
-view : Model -> Html Msg
-view model =
-    div []
-        [ buttonBar
-        , contentEditor model.blocks
-        , debugger model
+keypressRules : Dict Int String
+keypressRules =
+    Dict.fromList
+        [ ( 13, "enter" )
         ]
 
 
-buttonBar : Html Msg
-buttonBar =
-    div []
-        [ button [] [ text "Bold" ]
-        , button [] [ text "Italic" ]
-        , button [] [ text "Underline" ]
-        ]
+keypressDecoder : Config msg -> Decoder msg
+keypressDecoder config =
+    Json.Decode.customDecoder Events.keyCode
+        (\code ->
+            keypressRules
+                |> Dict.get code
+                |> Maybe.map (toMsg config << BeforeInput)
+                |> Result.fromMaybe "This key is not handled"
+        )
 
 
-contentEditor : List Block -> Html Msg
-contentEditor blocks =
-    div
-        [ contenteditable True
-        , onWithOptions "input" { preventDefault = True, stopPropagation = True } <| Json.map Change targetText
-        , onKeyDown Key
-        , id "EditorContent"
-        ]
-        [ div []
-            <| List.map renderBlock blocks
-        ]
+view : Config msg -> State -> Html msg
+view config state =
+    let
+        _ =
+            extractState state
+                |> Debug.log "state:"
+
+        children =
+            extractState state
+                |> .data
+                |> Document.map (nodeView config)
+    in
+        Html.div
+            [ Attr.contenteditable <| isEditable config
+            , Events.onWithOptions "keydown" { preventDefault = True, stopPropagation = False } <| keypressDecoder config
+            , Events.on "input" <| Json.Decode.map (toMsg config << Input) <| Json.Decode.at [ "target", "innerHTML" ] Json.Decode.string
+              -- , Events.on "mouseup" <| Json.Decode.succeed <| toMsg config Select
+              -- , Events.on "keyup" <| Json.Decode.succeed <| toMsg config Select
+            ]
+            children
 
 
-renderBlock : Block -> Html Msg
-renderBlock block =
-    div [] [ text block.text ]
+nodeView : Config msg -> a -> Html msg
+nodeView config foo =
+    Html.div [] []
 
 
-debugger : Model -> Html Msg
-debugger model =
-    if debug then
-        text <| toString model
-    else
-        text ""
+
+-- Utilities
+
+
+{-| Sometimes it's nice to not have to use destructuring
+-}
+extractConfig : Config msg -> { toMsg : Msg -> msg, readOnly : Bool }
+extractConfig (Config config) =
+    config
+
+
+extractState : State -> { data : Document, buffer : String }
+extractState (State state) =
+    state
+
+
+isEditable : Config msg -> Bool
+isEditable (Config config) =
+    not config.readOnly
+
+
+toMsg : Config msg -> (Msg -> msg)
+toMsg (Config config) =
+    config.toMsg
