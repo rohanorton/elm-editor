@@ -13,9 +13,9 @@ import Html exposing (Html)
 import Html.Attributes as Attr
 import Html.Events as Events
 import Json.Decode exposing (Decoder)
+import Json.Decode.Extra
 import Editor.Document as Document exposing (Document)
 import Dict exposing (Dict)
-import Focus exposing (Focus)
 
 
 -- Model
@@ -36,9 +36,9 @@ emptyEditor =
         }
 
 
-buffer : Focus { state | buffer : String } String
-buffer =
-    Focus.create .buffer (\updater state -> { state | buffer = updater state.buffer })
+bufferSet : String -> { state | buffer : String } -> { state | buffer : String }
+bufferSet newBuffer state =
+    { state | buffer = newBuffer }
 
 
 
@@ -60,7 +60,7 @@ update msg state =
         Input str ->
             state
                 |> extractState
-                |> Focus.set buffer str
+                |> bufferSet str
                 |> Debug.log "hm"
                 |> State
 
@@ -97,13 +97,15 @@ keypressRules =
 
 keypressDecoder : Config msg -> Decoder msg
 keypressDecoder config =
-    Json.Decode.customDecoder Events.keyCode
-        (\code ->
-            keypressRules
-                |> Dict.get code
-                |> Maybe.map (toMsg config << BeforeInput)
-                |> Result.fromMaybe "This key is not handled"
-        )
+    Events.keyCode
+        |> Json.Decode.andThen
+            (\code ->
+                keypressRules
+                    |> Dict.get code
+                    |> Maybe.map (toMsg config << BeforeInput)
+                    |> Result.fromMaybe "This key is not handled"
+                    |> Json.Decode.Extra.fromResult
+            )
 
 
 view : Config msg -> State -> Html msg
